@@ -1,0 +1,10 @@
+/var/log/httpd/*log {
+    missingok
+    notifempty
+    sharedscripts
+    delaycompress
+    postrotate
+        /sbin/service httpd reload > /dev/null 2>/dev/null || true
+        aws s3 mv /var/log/httpd/httpd.log-* s3://<%= @logs_bucket %>/<%= $stack_name %>/\n   endscript\n}"
+    endscript
+}

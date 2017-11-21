@@ -1,0 +1,197 @@
+---
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "Insert description here"
+Parameters:
+  InstanceTypeParameter: 
+    Type: String
+    Default: t2.micro
+    AllowedValues: 
+      - t2.micro
+      - t2.small
+      - t2.medium
+      - t2.large
+    Description: Enter t2.micro, t2.small, t2.medium, or t2.large. Default is t2.micro.
+  VpcId:
+    Type: String
+    Default: vpc-0000000
+    Description: VPC ID.
+  AMI:
+    Type: AWS::EC2::Image::Id
+    Default: ami-0000000
+    Description: AMI for EC2.
+  InstanceKeypair:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: EC2 keypair to associate with instance.
+  DeploySubnet:
+    Type: AWS::EC2::Subnet::Id
+    Description: The subnets to deploy autoscaling group and RDS in.
+  ElasticIP:
+    Type: String
+    Default: 0.0.0.0
+    Description: The Elastic IP address to be associated to the running EC2.
+  StackName:
+    Type: String
+    Default: stack-name
+    Description: This populates the tag fields.
+  ConfigBucket:
+    Type: String
+    Default: config-bucket
+    Description: The S3 bucket which contains the configuration.
+  LogsBucket:
+    Type: String
+    Default: logs-bucket
+    Description: The S3 bucket to place the rotated logs.
+
+Resources:
+  Ec2Role:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement: 
+          - 
+            Effect: "Allow"
+            Principal: 
+              Service: 
+                - "ec2.amazonaws.com"
+            Action: 
+              - "sts:AssumeRole"
+      Path: "/"
+      Policies:
+        - PolicyName: "assignEIP"
+          PolicyDocument: 
+            Version: "2012-10-17"
+            Statement: 
+              - 
+                Effect: "Allow"
+                Action: 
+                  - "ec2:AssociateAddress"
+                  - "ec2:AttachNetworkInterface"
+                  - "ec2:DetachNetworkInterface"
+                  - "ec2:DescribeNetworkInterfaces"
+                Resource: 
+                  - "*"
+        - PolicyName: "readConfigBucket"
+          PolicyDocument: 
+            Version: "2012-10-17"
+            Statement: 
+              - 
+                Effect: "Allow"
+                Action: 
+                  - "s3:ListBucket"
+                  - "s3:GetObject"
+                Resource: 
+                  - !Join [ "", [ "arn:aws:s3:::", Ref: ConfigBucket ] ]
+                  - !Join [ "", [ "arn:aws:s3:::", Ref: ConfigBucket, "/*" ] ]
+        - PolicyName: "writeLogsBucket"
+          PolicyDocument: 
+            Version: "2012-10-17"
+            Statement: 
+              - 
+                Effect: "Allow"
+                Action: 
+                  - "s3:ListBucket"
+                  - "s3:GetObject"
+                  - "s3:PutObject"
+                Resource: 
+                  - !Join [ "", [ "arn:aws:s3:::", Ref: LogsBucket ] ]
+                  - !Join [ "", [ "arn:aws:s3:::", Ref: LogsBucket, "/*" ] ]
+
+  Ec2SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: This is the security group for the service
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - 
+         IpProtocol: "tcp"
+         FromPort: "22"
+         ToPort: "22"
+         CidrIp: "130.102.0.0/16"
+        - 
+         IpProtocol: "tcp"
+         FromPort: "80"
+         ToPort: "80"
+         CidrIp: "130.102.0.0/16"
+      Tags:
+        -
+         Key: Name
+         Value: !Ref StackName
+
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    DependsOn:
+     - Ec2Role
+    Properties: 
+      Path: "/"
+      Roles: 
+        - !Ref Ec2Role
+
+  LaunchConfiguration:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    DependsOn:
+     - InstanceProfile 
+    Properties:
+      AssociatePublicIpAddress: True
+      ImageId: !Ref AMI
+      SecurityGroups: 
+       - !GetAtt Ec2SecurityGroup.GroupId
+      InstanceType: !Ref InstanceTypeParameter
+      KeyName: !Ref InstanceKeypair
+      IamInstanceProfile: !Ref InstanceProfile
+      UserData:
+        "Fn::Base64":
+          !Sub |
+            #!/bin/bash
+            EIP='${ElasticIP}'
+            PRIVATE_IP=$(curl -fsq http://169.254.169.254/latest/meta-data/local-ipv4)
+            INSTANCE_ID=$(curl -fsq http://169.254.169.254/latest/meta-data/instance-id)
+            CONFIG_BUCKET='${ConfigBucket}'
+            LOGS_BUCKET='${LogsBucket}'
+            STACK_NAME='${StackName}'
+            TMP_INSTALL_DIR='/etc/setup-files'
+
+            yum update -y
+            yum install jq -y
+            yum install puppet3 -y
+            
+            REGION=$(curl -s http://169.254.169.254/latest/dynamic/instance-identity/document | jq .region -r)
+            aws configure set default.region $REGION
+            aws s3 cp s3://$CONFIG_BUCKET/ $TMP_INSTALL_DIR --recursive
+
+            # Facts used for puppet
+            echo -e "eip="$EIP"\n" >> /etc/facter/facts.d/formation.txt
+            echo -e "logs_bucket="$LOGS_BUCKET"\n" >> /etc/facter/facts.d/formation.txt
+            echo -e "stack_name="$STACK_NAME"\n" >> /etc/facter/facts.d/formation.txt
+
+            # Puppet run
+            puppet apply $TMP_INSTALL_DIR/manifests/default.pp
+
+            # Sanity check to see if service is running
+            #if (); then 
+                echo -e "Attaching network interface...\n"
+                aws ec2 associate-address --public-ip $EIP --instance-id $INSTANCE_ID
+            #fi
+
+            # Ensure service starts on reboot
+            #chkconfig <service> on
+
+  AutoScaling:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    DependsOn:
+     - LaunchConfiguration
+    Properties:
+      DesiredCapacity: 1
+      MaxSize: 1
+      MinSize: 1
+      HealthCheckType: EC2
+      HealthCheckGracePeriod: 300
+      LaunchConfigurationName: !Ref LaunchConfiguration
+      VPCZoneIdentifier:
+        - !Ref DeploySubnet
+      Tags:
+       -
+        Key: Name
+        Value: !Ref StackName
+        PropagateAtLaunch: True
+
