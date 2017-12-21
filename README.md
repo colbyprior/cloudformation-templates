@@ -3,6 +3,12 @@ Upload configuration to a S3 bucket and use `cloudformation.yml` to deploy a new
 
 This deploys a EC2 in an autoscalling group (min 1 max 1) and uses Puppet in the user-data to setup Apache and attach an Elastic IP.
 
+## Ansible
+Deploys Cloudformation stack using ansible. Use variable files to manage different deployments.
+
+`ansible-playbook -i hosts.ini ansible-deploy.yml --extra-vars "var_file=vars/cf_vars.yml"`
+
+
 ## References
 Use the following references for developing new cloudformation templates.
  - [Cloudformation Reference](http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-template-resource-type-ref.html)

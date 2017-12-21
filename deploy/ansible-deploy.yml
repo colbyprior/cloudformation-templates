@@ -1,0 +1,29 @@
+---
+- name: provision stack
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - "{{ var_file }}"
+
+  tasks:
+    - name: deploy cloudformation stack
+      cloudformation:
+        stack_name: "{{ stack_name }}"
+        region: "{{ aws_region }}"
+        state: "{{ stack_state }}"
+        template: formation-stack.yml
+        disable_rollback: true
+        template_parameters:
+          InstanceTypeParameter: "{{ instance_type }}"
+          VpcId: "{{ vpc_id }}"
+          AMI: "{{ ami }}"
+          InstanceKeypair: "{{ instance_keypair }}"
+          StackName: "{{ stack_name }}"
+          ConfigBucket: "{{ config_bucket }}"
+          LogsBucket: "{{ logs_bucket }}"
+        tags:
+          Group: "{{ group }}"
+          Environment: "{{ env }}"
+          Email: "{{ email }}"
+          Service: "{{ service }}"
